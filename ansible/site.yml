@@ -1,0 +1,6 @@
+---
+- name: Orquestração da Rede Doméstica
+  import_playbook: playbooks/setup_opnsense.yml
+
+- name: Configuração do Access Point
+  import_playbook: playbooks/setup_cudy_ap.yml

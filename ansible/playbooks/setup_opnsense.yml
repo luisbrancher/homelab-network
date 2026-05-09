@@ -1,0 +1,181 @@
+---
+#SSH
+- name: Provisionamento e Configuração OPNsense
+  hosts: opnsense
+#  become: true
+  collections:
+    - oxlorg.opnsense
+
+  tasks:
+    # --- SISTEMA E PERFORMANCE ---
+    - name: Otimizar Kernel para Redes (igc3 e igc0)
+      shell: |
+        # Aplica nas interfaces WAN (igc0) e LAN/VLAN Trunk (igc3)
+        ifconfig igc0 -vlanhwtag -vlanhwfilter
+        ifconfig igc3 -vlanhwtag -vlanhwfilter
+      ignore_errors: true
+      changed_when: false
+
+    - name: Garantir que PowerD está em modo Hiadaptive
+      shell: |
+        configctl system powerd enable
+        configctl system powerd mode hiadaptive
+      changed_when: false
+      
+    - name: Verificar se há pacotes pendentes (Dry-run)
+      shell: "pkg upgrade -n"
+      register: pkg_check
+      changed_when: false
+      ignore_errors: true
+
+    - name: Atualizar Firmware do Sistema
+      shell: opnsense-update
+      # Só roda se o pkg_check disser que há algo para instalar/reinstalar/atualizar
+      when: 
+        - pkg_check.stdout is defined
+        - "'The following' in pkg_check.stdout" 
+      register: update_result
+
+    - name: Reiniciar após atualização
+      shell: shutdown -r now
+      async: 1
+      poll: 0
+      ignore_errors: true
+      # Agora o reboot fica blindado: só ocorre se a task acima de fato rodou
+      when: update_result is defined and update_result is changed
+
+    - name: Esperar o OPNsense voltar do reboot (Porta 443)
+      wait_for:
+        host: "10.10.10.1"
+        port: 443
+        state: started
+        delay: 15
+        timeout: 300
+      delegate_to: localhost
+
+# API
+- name: Configuração via API - OPNsense
+  hosts: opnsense
+  connection: local
+  gather_facts: false
+  module_defaults:
+    group/oxlorg.opnsense.all:
+      firewall: "10.10.10.1"
+      api_key: "{{ opnsense_api_key }}"
+      api_secret: "{{ opnsense_api_secret }}"
+      ssl_verify: false
+
+  tasks:
+    # --- 1. INTERFACES (VLANs) ---
+    - name: Criar VLANs no OPNsense
+      oxlorg.opnsense.interface_vlan:
+        description: "{{ item.name }}"
+        interface: igc3 # Sua porta física de Trunk
+        vlan: "{{ item.tag }}"
+      loop:
+        - { tag: 20, name: 'iot' }
+        - { tag: 30, name: 'guest' }
+        - { tag: 40, name: 'lab' }
+
+    # --- 2. KEA DHCP (SERVIÇOS DE BASE) ---
+    - name: Ativar Kea DHCP Control Agent (API Interna)
+      oxlorg.opnsense.dhcp_controlagent:
+        enabled: true
+#       match_fields: [enabled]
+
+    - name: Ativar Kea DHCPv4 e Vincular Interfaces
+      oxlorg.opnsense.dhcp_general:
+        enabled: true
+        # Aqui listamos os identificadores internos (lan, opt1, opt2, opt3)
+        interfaces: [lan, opt1, opt2, opt3]
+        fw_rules: true # Cria regras automáticas para permitir tráfego DHCP
+#       match_fields: [enabled]
+
+    - name: Configurar Subnets e Ranges no Kea (Com Gateway e DNS)
+      oxlorg.opnsense.dhcp_subnet: 
+        subnet: "{{ item.subnet }}.0/24"
+        pools: "{{ item.subnet }}.100 - {{ item.subnet }}.200"
+        description: "DHCP Gerenciado para {{ item.name }}"
+        gateway: "{{ item.subnet }}.1"
+        dns: "10.10.10.1, 8.8.8.8"
+      loop:
+        - { name: 'LAN',   subnet: '10.10.10' }
+        - { name: 'iot',   subnet: '10.10.20' }
+        - { name: 'guest', subnet: '10.10.30' }
+        - { name: 'lab',   subnet: '10.10.40' }
+
+    - name: Configurar Reservas de IP Estático no Kea
+      oxlorg.opnsense.dhcp_reservation:
+        subnet: "{{ item.subnet }}.0/24"
+        ip_address: "{{ item.ip }}"
+        mac: "{{ item.mac }}"
+        hostname: "{{ item.name }}"
+        description: "Reserva via Ansible para Homelab"
+      loop:
+        # Dados extraídos dos seus prints de leases e configuração manual
+        - { name: 'switch-main', subnet: '10.10.10', ip: '10.10.10.2',   mac: '8c:a6:82:71:4c:c3' }
+        - { name: 'cudy-ap',   subnet: '10.10.10', ip: '10.10.10.5', mac: 'd4:0d:ab:09:5b:31' }
+# ex    - { name: 'omada-ap',    subnet: '10.10.10', ip: '10.10.10.6', mac: '72:b7:51:f5:52:31' }
+        - { name: 'desktop',   subnet: '10.10.10', ip: '10.10.10.50', mac: '3c:7c:3f:78:f5:ba' }
+
+
+    - name: Aplicar configurações do Kea DHCP
+      oxlorg.opnsense.reload:
+        target: kea
+
+    # --- 3. REGRAS DE FIREWALL (SEGURANÇA POR CAMADAS) ---
+    
+    # Camada 1: Bloqueios Inter-VLAN (Sequence baixo = Topo)
+    - name: Firewall - Bloqueios Inter-VLAN
+      oxlorg.opnsense.rule:
+        interface: "{{ item.internal_iface }}" 
+        protocol: any
+        action: block
+        source: "{{ item.source_net }}"
+        destination: "{{ item.dest_net }}"
+        description: "Ansible: Block {{ item.friendly_name }} to {{ item.dest_name }}"
+        sequence: 10
+        match_fields: [description]
+      loop:
+        # IoT Isolada
+        - { friendly_name: 'iot', internal_iface: 'opt1', source_net: '10.10.20.0/24', dest_net: '10.10.10.0/24', dest_name: 'LAN' }
+        - { friendly_name: 'iot', internal_iface: 'opt1', source_net: '10.10.20.0/24', dest_net: '10.10.30.0/24', dest_name: 'Guest' }
+        - { friendly_name: 'iot', internal_iface: 'opt1', source_net: '10.10.20.0/24', dest_net: '10.10.40.0/24', dest_name: 'Lab' }
+        # Guest Isolada
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', dest_net: '10.10.10.0/24', dest_name: 'LAN' }
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', dest_net: '10.10.20.0/24', dest_name: 'IoT' }
+        # Lab Isolado
+        - { friendly_name: 'lab', internal_iface: 'opt3', source_net: '10.10.40.0/24', dest_net: '10.10.20.0/24', dest_name: 'IoT' }
+        - { friendly_name: 'lab', internal_iface: 'opt3', source_net: '10.10.40.0/24', dest_net: '10.10.30.0/24', dest_name: 'Guest' }
+
+    # Camada 2: Acesso à Internet (Sequence alto = Fundo)
+    - name: Firewall - Liberar Internet
+      oxlorg.opnsense.rule:
+        interface: "{{ item.internal_iface }}"
+        protocol: any
+        action: pass
+        direction: in
+        source: "{{ item.source_net }}"
+        destination: any
+        description: "Ansible: Allow Internet for {{ item.name }}"
+        sequence: 100
+        match_fields: [description]
+      loop:
+        - { name: 'LAN',   internal_iface: 'lan',  source_net: '10.10.10.0/24' }
+        - { name: 'iot',   internal_iface: 'opt1', source_net: '10.10.20.0/24' }
+        - { name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24' }
+        - { name: 'lab',   internal_iface: 'opt3', source_net: '10.10.40.0/24' }
+
+    - name: Aplicar novas regras de Firewall
+      oxlorg.opnsense.reload:
+        target: rule
+
+# Desativa o Dnsmasq padrao
+    - name: Desativar serviço Dnsmasq por completo (DHCP e DNS)
+      oxlorg.opnsense.dnsmasq_general:
+        enabled: false
+
+    - name: Aplicar mudanças no Dnsmasq
+      oxlorg.opnsense.reload:
+        target: dnsmasq
+      changed_when: false

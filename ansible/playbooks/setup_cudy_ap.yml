@@ -1,0 +1,211 @@
+---
+- name: Bootstrap Cudy TR3000 (OpenWrt) - Modo Access Point
+  hosts: cudy_ap
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: /bin/sh
+    new_ip: "10.10.10.5"
+    gateway_ip: "10.10.10.1"
+
+  tasks:
+    - name: Garantir que a LAN está no IP correto (10.10.10.5)
+      raw: |
+        if [ "$(uci get network.lan.ipaddr)" != "10.10.10.5" ]; then
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='10.10.10.5'
+          uci set network.lan.netmask='255.255.255.0'
+          uci set network.lan.gateway='10.10.10.1'
+          uci commit network
+          echo "changed"
+        fi
+      register: ip_change
+
+    - name: Reiniciar rede se o IP mudou
+      raw: (sleep 2 && /etc/init.d/network restart) &
+      async: 1
+      poll: 0
+      when: ip_change.stdout == "changed"
+
+    - name: Desativar DHCP Server na LAN (Modo AP)
+      raw: |
+        uci set dhcp.lan.ignore='1'
+
+    - name: Remover interfaces WAN (Limpeza)
+      raw: |
+        uci delete network.wan
+        uci delete network.wan6
+        # Remove a interface do firewall também para não dar erro
+        uci delete firewall.@zone[1] 
+      failed_when: false 
+
+    - name: Mudar porta 2.5Gbe (eth0) para fazer parte da bridge LAN
+      raw: |
+        # eth0 é WAN física adiciona ela a bridge lan
+        uci add_list network.@device[0].ports='eth0'
+
+    - name: Configurar Device br-lan com VLAN Filtering
+      raw: |
+        uci set network.@device[0].vlan_filtering='1'
+        uci commit network
+
+    - name: Configurar VLAN 1 (Trusted) como Untagged
+      raw: |
+        if ! uci show network | grep -q "bridge-vlan.*vlan='1'"; then
+          uci add network bridge-vlan
+          uci set network.@bridge-vlan[-1].device='br-lan'
+          uci set network.@bridge-vlan[-1].vlan='1'
+          uci add_list network.@bridge-vlan[-1].ports='eth0:u'
+          uci add_list network.@bridge-vlan[-1].ports='eth1:u'
+          uci set network.@bridge-vlan[-1].local='1'
+          uci commit network
+          echo "changed"
+        fi
+      register: vlan1_change
+
+    - name: Configurar VLANs 20, 30 e 40 como Tagged
+      raw: |
+        for vlan in 20 30 40; do
+          if ! uci show network | grep -q "bridge-vlan.*vlan='${vlan}'"; then
+            uci add network bridge-vlan
+            uci set network.@bridge-vlan[-1].device='br-lan'
+            uci set network.@bridge-vlan[-1].vlan="${vlan}"
+            uci add_list network.@bridge-vlan[-1].ports='eth0:t'
+            uci add_list network.@bridge-vlan[-1].ports='eth1:t'
+            uci set network.@bridge-vlan[-1].local='1'
+            uci commit network
+            echo "vlan ${vlan} created"
+          fi
+        done   
+
+    - name: Criar Interface Lógica iot na 20, guest na 30 e lab na 40
+      raw: |
+        # Ajustar a LAN principal para a VLAN 1 (Trusted)
+        uci set network.lan.device='br-lan.1'
+        
+        # Interface iot
+        uci set network.iot=interface
+        uci set network.iot.device='br-lan.20'
+        uci set network.iot.proto='none'
+
+        # Interface Guest
+        uci set network.guest=interface
+        uci set network.guest.device='br-lan.30'
+        uci set network.guest.proto='none'
+        
+        # Interface Lab
+        uci set network.lab=interface
+        uci set network.lab.device='br-lan.40'
+        uci set network.lab.proto='none'
+
+        uci commit network
+
+    - name: Configurar SSIDs
+      raw: |
+        # Função para verificar existência
+        check_exists() {
+          if uci show wireless | grep -q "ssid='$1'"; then
+            return 1 # Já existe
+          fi
+          return 0 # Não existe
+        }
+
+        # --- RADIO 1 (5GHz) ---
+
+        if check_exists 'lfck-trusted'; then
+          uci set wireless.wifinet_trusted=wifi-iface
+          uci set wireless.wifinet_trusted.device='radio1'
+          uci set wireless.wifinet_trusted.mode='ap'
+          uci set wireless.wifinet_trusted.ssid='lfck-trusted'
+          uci set wireless.wifinet_trusted.network='lan'
+          uci set wireless.wifinet_trusted.encryption='sae-mixed'
+          uci set wireless.wifinet_trusted.key='{{ vault_wifi_trusted_pass }}'
+          uci set wireless.wifinet_trusted.disabled='0'
+        fi
+
+        if check_exists 'lfck-iot'; then
+          uci set wireless.wifinet_iot=wifi-iface
+          uci set wireless.wifinet_iot.device='radio1'
+          uci set wireless.wifinet_iot.mode='ap'
+          uci set wireless.wifinet_iot.ssid='lfck-iot'
+          uci set wireless.wifinet_iot.network='iot'
+          uci set wireless.wifinet_iot.encryption='psk2'
+          uci set wireless.wifinet_iot.key='{{ vault_wifi_iot_pass }}'
+          uci set wireless.wifinet_iot.disabled='0'
+        fi
+
+        if check_exists 'lfck-lab'; then
+          uci set wireless.wifinet_lab=wifi-iface
+          uci set wireless.wifinet_lab.device='radio1'
+          uci set wireless.wifinet_lab.mode='ap'
+          uci set wireless.wifinet_lab.ssid='lfck-lab'
+          uci set wireless.wifinet_lab.network='lab'
+          uci set wireless.wifinet_lab.encryption='sae-mixed'
+          uci set wireless.wifinet_lab.key='{{ vault_wifi_lab_pass }}'
+          uci set wireless.wifinet_lab.disabled='0'
+        fi
+
+        if check_exists 'lfck-guest'; then
+          uci set wireless.wifinet_guest=wifi-iface
+          uci set wireless.wifinet_guest.device='radio1'
+          uci set wireless.wifinet_guest.mode='ap'
+          uci set wireless.wifinet_guest.ssid='lfck-guest'
+          uci set wireless.wifinet_guest.network='guest'
+          uci set wireless.wifinet_guest.encryption='sae-mixed'
+          uci set wireless.wifinet_guest.key='{{ vault_wifi_guest_pass }}'
+          uci set wireless.wifinet_guest.disabled='0'
+        fi
+
+        # --- RADIO 0 (2.4GHz) ---
+
+        if check_exists 'lfck-trusted_2g'; then
+          uci set wireless.wifinet_trusted_2g=wifi-iface
+          uci set wireless.wifinet_trusted_2g.device='radio0'
+          uci set wireless.wifinet_trusted_2g.mode='ap'
+          uci set wireless.wifinet_trusted_2g.ssid='lfck-trusted_2g'
+          uci set wireless.wifinet_trusted_2g.network='lan'
+          uci set wireless.wifinet_trusted_2g.encryption='sae-mixed'
+          uci set wireless.wifinet_trusted_2g.key='{{ vault_wifi_trusted_pass }}'
+          uci set wireless.wifinet_trusted_2g.disabled='0'
+        fi
+
+        if check_exists 'lfck-iot_2g'; then
+          uci set wireless.wifinet_iot_2g=wifi-iface
+          uci set wireless.wifinet_iot_2g.device='radio0'
+          uci set wireless.wifinet_iot_2g.mode='ap'
+          uci set wireless.wifinet_iot_2g.ssid='lfck-iot_2g'
+          uci set wireless.wifinet_iot_2g.network='iot'
+          uci set wireless.wifinet_iot_2g.encryption='psk2'
+          uci set wireless.wifinet_iot_2g.key='{{ vault_wifi_iot_pass }}'
+          uci set wireless.wifinet_iot_2g.disabled='0'
+        fi
+
+        uci commit wireless
+
+    - name: Aplicar configuracoes globais de Radio e Canais
+      raw: |
+        # Configura Radio 0 (2.4GHz)
+        uci set wireless.radio0.channel='auto'
+        uci set wireless.radio0.disabled='0'
+        
+        # Configura Radio 1 (5GHz)
+        uci set wireless.radio1.channel='auto'
+        uci set wireless.radio1.disabled='0'
+
+        # Garante que NENHUMA interface individual ficou desativada
+        uci show wireless | grep "=wifi-iface" | cut -d'.' -f2 | cut -d'=' -f1 | while read section; do
+          uci set wireless.${section}.disabled='0'
+        done
+
+        uci commit wireless
+
+        wifi reload && sleep 2 && wifi up
+
+    - name: Aplicar e Salvar (Commit)
+      raw: |
+        uci commit network
+        uci commit dhcp
+        uci commit wireless
+        # O restart final vai mudar o IP, então o Ansible pode perder a conexão aqui.
+        (sleep 2 && /etc/init.d/network restart) &
+
+
