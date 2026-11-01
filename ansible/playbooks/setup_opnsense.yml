@@ -65,10 +65,12 @@
     - name: Configurar Subnets e Ranges no Kea (Com Gateway e DNS)
       oxlorg.opnsense.dhcp_subnet: 
         subnet: "{{ item.subnet }}.0/24"
-        pools: "{{ item.subnet }}.100 - {{ item.subnet }}.200"
+        pools: ["{{ item.subnet }}.100 - {{ item.subnet }}.200"]
         description: "DHCP Gerenciado para {{ item.name }}"
-        gateway: "{{ item.subnet }}.1"
-        dns: "10.10.10.1, 8.8.8.8"
+        gateway: ["{{ item.subnet }}.1"]
+        # Cada VLAN usa o próprio gateway como DNS (Unbound). Sem 8.8.8.8: com ele, parte das consultas pula o
+        # DNS local, e IoT/guest não alcançam o 10.10.10.1 (bloqueado para elas)
+        dns: ["{{ item.subnet }}.1"]
       loop:
         - { name: 'LAN',   subnet: '10.10.10' }
         - { name: 'iot',   subnet: '10.10.20' }
@@ -87,7 +89,8 @@
         - { name: 'switch-main', subnet: '10.10.10', ip: '10.10.10.2',   mac: '8c:a6:82:71:4c:c3' }
         - { name: 'cudy-ap',   subnet: '10.10.10', ip: '10.10.10.5', mac: 'd4:0d:ab:09:5b:31' }
 # ex    - { name: 'omada-ap',    subnet: '10.10.10', ip: '10.10.10.6', mac: '72:b7:51:f5:52:31' }
-        - { name: 'desktop',   subnet: '10.10.10', ip: '10.10.10.50', mac: '3c:7c:3f:78:f5:ba' }
+        # Placa 2.5G PCIe (a 1GbE onboard era 3c:7c:3f:78:f5:ba)
+        - { name: 'desktop',   subnet: '10.10.10', ip: '10.10.10.50', mac: 'e0:d4:e8:81:e4:85' }
 
 
     - name: Aplicar configurações do Kea DHCP
@@ -115,9 +118,46 @@
         # Guest Isolada
         - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', dest_net: '10.10.10.0/24', dest_name: 'LAN' }
         - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', dest_net: '10.10.20.0/24', dest_name: 'IoT' }
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', dest_net: '10.10.40.0/24', dest_name: 'Lab' }
         # Lab Isolado
         - { friendly_name: 'lab', internal_iface: 'opt3', source_net: '10.10.40.0/24', dest_net: '10.10.20.0/24', dest_name: 'IoT' }
         - { friendly_name: 'lab', internal_iface: 'opt3', source_net: '10.10.40.0/24', dest_net: '10.10.30.0/24', dest_name: 'Guest' }
+
+    # Camada 1b: Guest/IoT só falam com o próprio firewall para DNS, DHCP e NTP.
+    # Sem isso, o gateway (10.10.20.1, 10.10.30.1) cai no "Allow Internet" e expõe GUI e SSH do OPNsense
+    - name: Firewall - Liberar DNS/DHCP/NTP no firewall (Guest/IoT)
+      oxlorg.opnsense.rule:
+        interface: "{{ item.internal_iface }}"
+        protocol: "{{ item.proto }}"
+        action: pass
+        direction: in
+        source: "{{ item.source_net }}"
+        destination: "(self)"
+        destination_port: "{{ item.port }}"
+        description: "Ansible: Allow {{ item.friendly_name }} {{ item.service }} to firewall"
+        sequence: 20
+        match_fields: [description]
+      loop:
+        - { friendly_name: 'iot',   internal_iface: 'opt1', source_net: '10.10.20.0/24', service: 'DNS',  proto: 'TCP/UDP', port: '53' }
+        - { friendly_name: 'iot',   internal_iface: 'opt1', source_net: '10.10.20.0/24', service: 'DHCP', proto: 'UDP',     port: '67' }
+        - { friendly_name: 'iot',   internal_iface: 'opt1', source_net: '10.10.20.0/24', service: 'NTP',  proto: 'UDP',     port: '123' }
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', service: 'DNS',  proto: 'TCP/UDP', port: '53' }
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', service: 'DHCP', proto: 'UDP',     port: '67' }
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24', service: 'NTP',  proto: 'UDP',     port: '123' }
+
+    - name: Firewall - Bloquear acesso ao firewall (Guest/IoT)
+      oxlorg.opnsense.rule:
+        interface: "{{ item.internal_iface }}"
+        protocol: any
+        action: block
+        source: "{{ item.source_net }}"
+        destination: "(self)"
+        description: "Ansible: Block {{ item.friendly_name }} to firewall"
+        sequence: 30
+        match_fields: [description]
+      loop:
+        - { friendly_name: 'iot',   internal_iface: 'opt1', source_net: '10.10.20.0/24' }
+        - { friendly_name: 'guest', internal_iface: 'opt2', source_net: '10.10.30.0/24' }
 
     # Camada 2: Acesso à Internet (Sequence alto = Fundo)
     - name: Firewall - Liberar Internet
