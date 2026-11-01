@@ -1,0 +1,32 @@
+---
+# Atualização de firmware do OPNsense.
+# Separado do setup_opnsense.yml de propósito: atualizar reinicia o roteador e derruba a rede da casa,
+# então só roda quando chamado explicitamente. Não é importado pelo site.yml.
+- name: Atualização de firmware OPNsense
+  hosts: opnsense
+
+  tasks:
+    - name: Atualizar catálogo de pacotes
+      shell: pkg update -f
+      changed_when: false
+
+    - name: Verificar se há pacotes pendentes (Dry-run)
+      shell: "pkg upgrade -n"
+      register: pkg_check
+      changed_when: false
+      # pkg upgrade -n sai com 1 quando há pacotes para atualizar; só é erro de verdade acima disso
+      failed_when: pkg_check.rc not in [0, 1]
+
+    - name: Mostrar o que vai ser atualizado
+      debug:
+        var: pkg_check.stdout_lines
+
+    - name: Atualizar Firmware do Sistema
+      shell: opnsense-update
+      when: "'The following' in pkg_check.stdout"
+      register: update_result
+
+    - name: Reiniciar e esperar o OPNsense voltar
+      reboot:
+        reboot_timeout: 600
+      when: update_result is changed

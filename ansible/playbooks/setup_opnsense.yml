@@ -21,37 +21,8 @@
         configctl system powerd enable
         configctl system powerd mode hiadaptive
       changed_when: false
-      
-    - name: Verificar se há pacotes pendentes (Dry-run)
-      shell: "pkg upgrade -n"
-      register: pkg_check
-      changed_when: false
-      ignore_errors: true
 
-    - name: Atualizar Firmware do Sistema
-      shell: opnsense-update
-      # Só roda se o pkg_check disser que há algo para instalar/reinstalar/atualizar
-      when: 
-        - pkg_check.stdout is defined
-        - "'The following' in pkg_check.stdout" 
-      register: update_result
-
-    - name: Reiniciar após atualização
-      shell: shutdown -r now
-      async: 1
-      poll: 0
-      ignore_errors: true
-      # Agora o reboot fica blindado: só ocorre se a task acima de fato rodou
-      when: update_result is defined and update_result is changed
-
-    - name: Esperar o OPNsense voltar do reboot (Porta 443)
-      wait_for:
-        host: "10.10.10.1"
-        port: 443
-        state: started
-        delay: 15
-        timeout: 300
-      delegate_to: localhost
+    # Atualização de firmware + reboot ficam em upgrade_opnsense.yml (rodar à parte)
 
 # API
 - name: Configuração via API - OPNsense

@@ -40,7 +40,8 @@ homelab-network/
 │   ├── hosts.ini               → inventory (opnsense + cudy_ap)
 │   ├── playbooks/
 │   │   ├── setup_ap.yml        → configures OpenWrt as dumb AP via SSH (raw)
-│   │   └── setup_opnsense.yml  → provisions OPNsense via SSH + REST API
+│   │   ├── setup_opnsense.yml  → provisions OPNsense via SSH + REST API
+│   │   └── upgrade_opnsense.yml → firmware update + reboot (run on demand, not in site.yml)
 │   └── site.yml                → main entrypoint, imports all playbooks
 └── readme.md
 ```
@@ -78,6 +79,9 @@ ansible -i ansible/hosts.ini cudy_ap -m raw -a "/bin/true" --ask-vault-pass
 # Provision OPNsense (system + VLANs + Kea DHCP + firewall rules via API)
 ansible-playbook -i ansible/hosts.ini ansible/playbooks/setup_opnsense.yml --ask-vault-pass
 
+# Update OPNsense firmware (reboots the router if anything is updated — the whole house loses network)
+ansible-playbook -i ansible/hosts.ini ansible/playbooks/upgrade_opnsense.yml --ask-vault-pass
+
 # Configure OpenWrt as dumb AP
 ansible-playbook -i ansible/hosts.ini ansible/playbooks/setup_ap.yml --ask-vault-pass
 ```
@@ -111,7 +115,12 @@ ansible-vault edit ansible/group_vars/all/vault.yml
 Play 1 (SSH):
 - Disables VLAN hardware offload on `igc0` and `igc3`
 - Enables PowerD in hiadaptive mode
-- Updates firmware and reboots if packages are pending; waits for port 443 to come back up
+
+**`upgrade_opnsense.yml`**
+
+Kept separate on purpose: updating reboots the router. Never imported by `site.yml`.
+- Refreshes the package catalog (`pkg update -f`) and lists pending upgrades
+- Runs `opnsense-update` only if something is pending, then reboots and waits for the host to come back
 
 Play 2 (REST API via `oxlorg.opnsense`):
 - Creates VLANs 20, 30 and 40 on `igc3`
