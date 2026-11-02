@@ -42,7 +42,7 @@ homelab-network/
 │   │   ├── setup_ap.yml        → configures OpenWrt as dumb AP via SSH (raw)
 │   │   ├── setup_opnsense.yml  → provisions OPNsense via SSH + REST API
 │   │   └── upgrade_opnsense.yml → firmware update + reboot (run on demand, not in site.yml)
-│   └── site.yml                → main entrypoint, imports all playbooks
+│   └── site.yml                → main entrypoint, imports setup_opnsense.yml (Cudy playbook disabled)
 └── readme.md
 ```
 
