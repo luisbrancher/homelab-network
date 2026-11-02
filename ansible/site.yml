@@ -2,5 +2,7 @@
 - name: Orquestração da Rede Doméstica
   import_playbook: playbooks/setup_opnsense.yml
 
-- name: Configuração do Access Point
-  import_playbook: playbooks/setup_cudy_ap.yml
+# Desativado: setup_cudy_ap.yml não é idempotente (apaga firewall.@zone[1] a cada execução).
+# Sai de vez na migração para o Omada.
+# - name: Configuração do Access Point
+#   import_playbook: playbooks/setup_cudy_ap.yml
