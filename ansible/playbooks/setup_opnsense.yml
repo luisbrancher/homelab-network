@@ -91,6 +91,18 @@
 # ex    - { name: 'omada-ap',    subnet: '10.10.10', ip: '10.10.10.6', mac: '72:b7:51:f5:52:31' }
         # Placa 2.5G PCIe (a 1GbE onboard era 3c:7c:3f:78:f5:ba)
         - { name: 'desktop',   subnet: '10.10.10', ip: '10.10.10.50', mac: 'e0:d4:e8:81:e4:85' }
+        # Hosts físicos. O TrueNAS (.15) é referenciado pelos PVs NFS: trocar a placa = atualizar o MAC aqui
+        # (vale também para o Proxmox, que troca de placa junto)
+        - { name: 'proxmox',        subnet: '10.10.10', ip: '10.10.10.10', mac: '60:c7:27:14:6e:2c' }
+        - { name: 'pi4',            subnet: '10.10.10', ip: '10.10.10.14', mac: 'e4:5f:01:1a:d1:97' }
+        - { name: 'truenas',        subnet: '10.10.10', ip: '10.10.10.15', mac: '64:1c:67:c6:05:85' }
+        # VM e LXCs do Proxmox. O MAC está fixo no Terraform (homelab-infra e dash-infra): os dois lados precisam bater
+        - { name: 'k3s-node',       subnet: '10.10.10', ip: '10.10.10.11', mac: 'bc:24:11:5a:36:6a' }
+        - { name: 'lxc-monitoring', subnet: '10.10.10', ip: '10.10.10.13', mac: 'bc:24:11:d1:3c:97' }
+        - { name: 'forgejo',        subnet: '10.10.10', ip: '10.10.10.85', mac: 'bc:24:11:21:68:ac' }
+        - { name: 'lfck',           subnet: '10.10.10', ip: '10.10.10.90', mac: 'bc:24:11:ae:8d:92' }
+        - { name: 'cestou',         subnet: '10.10.10', ip: '10.10.10.91', mac: 'bc:24:11:9a:3a:e2' }
+        - { name: 'eurotrips',      subnet: '10.10.10', ip: '10.10.10.92', mac: 'bc:24:11:25:4d:93' }
 
 
     - name: Aplicar configurações do Kea DHCP
